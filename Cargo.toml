@@ -1,0 +1,8 @@
+[package]
+name = "rust-ascii-generator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+image = { version = "0.24.3", features = ["jpeg", "webp"] }
+colored = "2.0"
