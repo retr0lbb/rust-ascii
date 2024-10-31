@@ -1,6 +1,6 @@
 use image::GenericImageView;
 use colored::*;
-use std::env;
+use std::{env, error::Error};
 
 fn get_str_ascii(intent: u8) -> &'static str {
     let index = intent / 16;
@@ -9,8 +9,18 @@ fn get_str_ascii(intent: u8) -> &'static str {
 }
  
 
-fn get_image(dir: &str, scale: u32) {
-    match image::open(dir) {
+fn load_image(path_or_url: &str) -> Result<image::DynamicImage, Box<dyn Error>> {
+    if path_or_url.starts_with("http") {
+        let response = reqwest::blocking::get(path_or_url)?;
+        let bytes = response.bytes()?;
+        Ok(image::load_from_memory(&bytes)?)
+    } else {
+        Ok(image::open(path_or_url)?)
+    }
+}
+
+fn get_image(path_or_url: &str, scale: u32) {
+    match load_image(path_or_url) {
         Ok(img) => {
             println!("{:?}", img.dimensions());
             let (width, height) = img.dimensions();
@@ -46,7 +56,12 @@ fn get_image(dir: &str, scale: u32) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let scale = args.get(1).unwrap_or(&"6".to_string()).parse::<u32>().unwrap_or(6);
+    if args.len()<2{
+        eprint!("Uso: cargo run <caminho_ou_url_da_imagem> <escala_reduzida>");
+        return;
+    }
+    let path_or_url = &args[1];
+    let scale = args.get(2).unwrap_or(&"6".to_string()).parse::<u32>().unwrap_or(6);
 
-    get_image("testw.webp", scale);
+    get_image(path_or_url, scale);
 }

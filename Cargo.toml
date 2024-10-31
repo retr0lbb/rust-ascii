@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 image = { version = "0.24.3", features = ["jpeg", "webp"] }
+reqwest = { version = "0.11", features = ["blocking"] }
 colored = "2.0"
