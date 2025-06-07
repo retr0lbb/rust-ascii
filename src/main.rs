@@ -3,7 +3,7 @@ use colored::*;
 use std::{env, error::Error};
 
 fn get_str_ascii(intent: u8) -> &'static str {
-    let index = intent / 16;
+    let index = intent / 32;
     let ascii = [" ", ".", ",", "-", "~", "+", "=", "@", "#", "$", "%", "&", "8", "B", "M", "W"];
     return ascii[index as usize];
 }
