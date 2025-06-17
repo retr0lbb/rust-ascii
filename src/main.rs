@@ -23,7 +23,7 @@ fn load_image(path_or_url: &str) -> Result<image::DynamicImage, Box<dyn Error>> 
     }
 }
 
-fn get_image(path_or_url: &str, scale: u32) {
+fn get_image(path_or_url: &str, scale: u32, is_colored: bool) {
     match load_image(path_or_url) {
         Ok(img) => {
             println!("{:?}", img.dimensions());
@@ -45,7 +45,11 @@ fn get_image(path_or_url: &str, scale: u32) {
                         }
 
                         let ascii_char = get_str_ascii(intent, pallet_choice);
-                        print!("{}", ascii_char.truecolor(r, g, b))
+                        if is_colored {
+                            print!("{}", ascii_char.truecolor(r, g, b));
+                        } else {
+                            print!("{}", ascii_char);
+                        }
                     }
                 }
             
@@ -62,14 +66,14 @@ fn get_image(path_or_url: &str, scale: u32) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len()<3{
+    if args.len()<1{
         eprint!("Uso: cargo run <caminho_ou_url_da_imagem> <escala_reduzida> <colorido?>");
         return;
     }
     let path_or_url = &args[1];
     let scale = args.get(2).unwrap_or(&"6".to_string()).parse::<u32>().unwrap_or(6);
-    let is_colored = args.get(3).unwrap();
+    let is_colored = args.get(3).map(|arg| arg == "color" || arg == "colored").unwrap_or(false);
 
 
-    get_image(path_or_url, scale);
+    get_image(path_or_url, scale, is_colored);
 }
