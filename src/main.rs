@@ -1,6 +1,8 @@
-use image::GenericImageView;
+use image::{GenericImageView, RgbImage, Rgb};
+use imageproc::drawing::draw_text_mut;
 use colored::*;
-use std::{env, error::Error};
+use rusttype::{Font, Scale};
+use std::{env, error::Error, fs};
 use rand::Rng;
 
 const ASCII_PALETTE_1: [&str; 16] = [" ", ".", ",", "-", "~", "+", "=", "@", "#", "$", "%", "&", "8", "B", "M", "W"];
@@ -23,45 +25,79 @@ fn load_image(path_or_url: &str) -> Result<image::DynamicImage, Box<dyn Error>> 
     }
 }
 
-fn get_image(path_or_url: &str, scale: u32, is_colored: bool) {
+fn get_image(path_or_url: &str, scale: u32, is_colored: bool, output_img: Option<&str>) {
     match load_image(path_or_url) {
         Ok(img) => {
             println!("{:?}", img.dimensions());
             let (width, height) = img.dimensions();
 
-            for y in 0..height{
-                for x in 0..width{
-                    let mut rng = rand::thread_rng();
-                    let pallet_choice = if rng.gen_bool(0.5) {&ASCII_PALETTE_1} else {&ASCII_PALETTE_2};
-                    if y % (scale * 2) == 0 && x % scale == 0{
-                        let pix = img.get_pixel(x, y);
-                        let mut intent = pix[0]/3 + pix[1]/3 + pix[2]/3;
+            let mut ascii_lines: Vec<String> = vec![];
 
-                        let (r, g, b) = (pix[0], pix[1],pix[2]);
+            for y in 0..height {
+                if y % (scale * 2) != 0 {
+                    continue;
+                }
 
+                let mut line = String::new();
 
-                        if pix[3] == 0{
-                            intent = 0;
-                        }
-
-                        let ascii_char = get_str_ascii(intent, pallet_choice);
-                        if is_colored {
-                            print!("{}", ascii_char.truecolor(r, g, b));
-                        } else {
-                            print!("{}", ascii_char);
-                        }
+                for x in 0..width {
+                    if x % scale != 0 {
+                        continue;
                     }
+
+                    let mut rng = rand::thread_rng();
+                    let pallet_choice = if rng.gen_bool(0.5) { &ASCII_PALETTE_1 } else { &ASCII_PALETTE_2 };
+
+                    let pix = img.get_pixel(x, y);
+                    let mut intent = pix[0] / 3 + pix[1] / 3 + pix[2] / 3;
+
+                    let (r, g, b) = (pix[0], pix[1], pix[2]);
+
+                    if pix[3] == 0 {
+                        intent = 0;
+                    }
+
+                    let ascii_char = get_str_ascii(intent, pallet_choice);
+
+                    if is_colored {
+                        print!("{}", ascii_char.truecolor(r, g, b));
+                    } else {
+                        print!("{}", ascii_char);
+                    }
+
+                    line.push_str(ascii_char);
                 }
-            
-                if y %(scale*2) == 0{
-                    println!("")
-                }
+
+                println!();
+                ascii_lines.push(line);
+            }
+
+            if let Some(output_path) = output_img {
+                save_ascii_to_image(&ascii_lines, output_path, 800, 800);
+                println!("Imagem ASCII salva em: {}", output_path);
             }
         }
-        Err(e) =>{
-            eprintln!("Erro ao abrir imagem: {}", e)
+        Err(e) => {
+            eprintln!("Erro ao abrir imagem: {}", e);
         }
     }
+}
+
+fn save_ascii_to_image(ascii_lines: &Vec<String>, output_path: &str, width: u32, height: u32) {
+    let mut img = RgbImage::new(width, height);
+
+    let font_data = fs::read("font.ttf").expect("Não foi possível ler a fonte solicitada");
+    let font = Font::try_from_vec(font_data).unwrap();
+    let scale = Scale { x: 10.0, y: 10.0 };
+
+    let white = Rgb([255u8, 255u8, 255u8]);
+
+    for (line_idx, line) in ascii_lines.iter().enumerate() {
+        let y: i32 = (line_idx as i32) * 12; // 12 pixels de altura por linha
+        draw_text_mut(&mut img, white, 5, y, scale, &font, line);
+    }
+
+    img.save(output_path).expect("Erro ao salvar a imagem de saída");
 }
 
 fn main() {
@@ -75,5 +111,10 @@ fn main() {
     let is_colored = args.get(3).map(|arg| arg == "color" || arg == "colored").unwrap_or(false);
 
 
-    get_image(path_or_url, scale, is_colored);
+    let output_img = if args.contains(&"--img".to_string()) {
+        Some("saida.png")
+    } else {
+        None
+    };
+    get_image(path_or_url, scale, is_colored, output_img);
 }
