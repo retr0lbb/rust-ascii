@@ -4,9 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-image = { version = "0.24.3", features = ["jpeg", "webp"] }
-reqwest = { version = "0.11", features = ["blocking"] }
-colored = "2.0"
-rand = "0.8"
+image = "0.25"
+imageproc = "0.25"
 rusttype = "0.9"
-imageproc = "0.23"
+colored = "2.1"
+chrono = "0.4"
+reqwest = { version = "0.12", features = ["blocking"] }
+rayon = "1.10"
+ab_glyph = "0.2.32"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
