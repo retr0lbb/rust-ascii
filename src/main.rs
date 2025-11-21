@@ -1,161 +1,293 @@
-use image::{GenericImageView, RgbImage, Rgb};
+use image::{GenericImageView, ImageBuffer, Rgba, RgbImage, Rgb};
 use imageproc::drawing::draw_text_mut;
 use colored::*;
-use rusttype::{Font, Scale, VMetrics};
-use core::num;
-use std::{env, error::Error, fs};
+use rusttype::{Font, Scale};
+use std::{env, error::Error, fs, process::Command, path::PathBuf, thread, time::Duration};
 use rand::Rng;
+use chrono::Utc;
 
-const ASCII_PALETTE_1: [&str; 16] = [" ", ".", ",", "-", "~", "+", "=", "@", "#", "$", "%", "&", "8", "B", "M", "W"];
-const ASCII_PALETTE_2: [&str; 16] = [" ", ":", ";", "!", "^", "*", "x", "o", "O", "0", "Q", "X", "H", "M", "W", "@"];
+const FONT_RATIO: f32 = 0.5;
+const LUMINANCE_THRESHOLD: u8 = 30;
+
+const ASCII_PALETTE: [&str; 16] = [" ", ".", ":", "-", "=", "+", "*", "#", "%", "@", "8", "B", "M", "W", "$", "&"];
 
 struct AsciiPixel {
-    char: String,
+    ch: String,
     color: (u8, u8, u8),
 }
 
-fn get_str_ascii<'a>(intent: u8, palette: &'a [&'a str; 16]) -> &'a str {
-    let index = (intent / 16).min(15);
-    palette[index as usize]
+fn get_ascii_char(luminance: u8) -> &'static str {
+    let idx = (luminance as usize * 15) / 255;
+    ASCII_PALETTE[idx.min(15)]
 }
 
-fn load_image(path_or_url: &str) -> Result<image::DynamicImage, Box<dyn Error>> {
-    if path_or_url.starts_with("http") {
-        let response = reqwest::blocking::get(path_or_url)?;
-        let bytes = response.bytes()?;
-        Ok(image::load_from_memory(&bytes)?)
+fn luminance_from_rgba(px: &Rgba<u8>) -> u8 {
+    if px[3] == 0 { return 0; }
+    let lum = 0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32;
+    lum.clamp(0.0, 255.0) as u8
+}
+
+fn sobel_at(img: &ImageBuffer<Rgba<u8>, Vec<u8>>, x: i32, y: i32) -> (f32, f32) {
+    let kx: [[i32;3];3] = [[-1,0,1],[-2,0,2],[-1,0,1]];
+    let ky: [[i32;3];3] = [[-1,-2,-1],[0,0,0],[1,2,1]];
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let (mut gx, mut gy) = (0.0f32, 0.0f32);
+
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let sx = (x + dx).clamp(0, w-1) as u32;
+            let sy = (y + dy).clamp(0, h-1) as u32;
+            let lum = luminance_from_rgba(img.get_pixel(sx, sy)) as f32;
+            gx += kx[(dy+1) as usize][(dx+1) as usize] as f32 * lum;
+            gy += ky[(dy+1) as usize][(dx+1) as usize] as f32 * lum;
+        }
+    }
+    ((gx*gx + gy*gy).sqrt(), gy.atan2(gx))
+}
+
+fn angle_to_char(angle: f32) -> &'static str {
+    let deg = angle.to_degrees();
+    let d = ((deg % 360.0) + 360.0) % 360.0;
+    match d {
+        d if d <= 22.5 || d > 337.5 => "-",
+        d if d <= 67.5 => "/",
+        d if d <= 112.5 => "|",
+        d if d <= 157.5 => "\\",
+        d if d <= 202.5 => "-",
+        d if d <= 247.5 => "/",
+        d if d <= 292.5 => "|",
+        _ => "\\",
+    }
+}
+
+fn image_to_ascii(img: &image::DynamicImage, cols: u32, colored: bool, sobel: bool, print_to_term: bool) -> Vec<Vec<AsciiPixel>> {
+    let (orig_w, orig_h) = img.dimensions();
+    
+    // Calcula dimensões mantendo proporção
+    let aspect = orig_h as f32 / orig_w as f32;
+    let rows = ((cols as f32 * aspect * FONT_RATIO) as u32).max(1);
+    
+    let resized = img.resize_exact(cols, rows, image::imageops::FilterType::Lanczos3);
+    let rgba = resized.to_rgba8();
+
+    let mut lines: Vec<Vec<AsciiPixel>> = Vec::new();
+
+    for y in 0..rows {
+        let mut line: Vec<AsciiPixel> = Vec::new();
+        for x in 0..cols {
+            let px = rgba.get_pixel(x, y);
+            let (r, g, b) = (px[0], px[1], px[2]);
+            let lum = luminance_from_rgba(px);
+
+            let ch = if sobel {
+                let (mag, ang) = sobel_at(&rgba, x as i32, y as i32);
+                if mag > LUMINANCE_THRESHOLD as f32 * 4.0 {
+                    angle_to_char(ang).to_string()
+                } else {
+                    get_ascii_char(lum).to_string()
+                }
+            } else {
+                get_ascii_char(lum).to_string()
+            };
+
+            if print_to_term {
+                if colored {
+                    print!("{}", ch.truecolor(r, g, b));
+                } else {
+                    print!("{}", ch);
+                }
+            }
+
+            line.push(AsciiPixel { ch, color: (r, g, b) });
+        }
+        if print_to_term { println!(); }
+        lines.push(line);
+    }
+    lines
+}
+
+fn save_ascii_txt(lines: &[Vec<AsciiPixel>], path: &str) -> Result<(), Box<dyn Error>> {
+    let txt: String = lines.iter()
+        .map(|line| line.iter().map(|p| p.ch.as_str()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(path, txt)?;
+    println!("✓ Salvo TXT: {}", path);
+    Ok(())
+}
+
+fn save_ascii_image(lines: &[Vec<AsciiPixel>], path: &str, char_size: u32) -> Result<(), Box<dyn Error>> {
+    // Usa fonte embutida se font-2.ttf não existir
+    let font_data = if let Ok(data) = fs::read("font-2.ttf") {
+        data
     } else {
-        Ok(image::open(path_or_url)?)
-    }
-}
+        println!("⚠ font-2.ttf não encontrado, usando fonte padrão");
+        (Vec::new())
+    };
+    
+    let font = Font::try_from_vec(font_data).ok_or("Erro ao carregar fonte")?;
+    let scale = Scale::uniform(char_size as f32);
+    
+    let v = font.v_metrics(scale);
+    let char_w = font.glyph('W').scaled(scale).h_metrics().advance_width.ceil() as u32;
+    let char_h = (v.ascent - v.descent).ceil() as u32;
 
-fn get_image(path_or_url: String, scale: u32, is_colored: bool, output_img: Option<(String, u32)>) {
-    match load_image(&path_or_url) {
-        Ok(img) => {
-            println!("{:?}", img.dimensions());
-            let (width, height) = img.dimensions();
+    let cols = lines.first().map(|l| l.len()).unwrap_or(0) as u32;
+    let rows = lines.len() as u32;
+    
+    let img_w = (cols * char_w).max(1);
+    let img_h = (rows * char_h).max(1);
 
-            let mut ascii_lines: Vec<Vec<AsciiPixel>> = vec![];
+    let mut img = RgbImage::new(img_w, img_h);
 
-            for y in 0..height {
-                if y % (scale * 2) != 0 {
-                    continue;
-                }
-
-                let mut line: Vec<AsciiPixel> = vec![];
-
-                for x in 0..width {
-                    if x % scale != 0 {
-                        continue;
-                    }
-
-                    let mut rng = rand::thread_rng();
-                    let pallet_choice = if rng.gen_bool(0.5) { &ASCII_PALETTE_1 } else { &ASCII_PALETTE_2 };
-
-                    let pix = img.get_pixel(x, y);
-                    let mut intent = pix[0] / 3 + pix[1] / 3 + pix[2] / 3;
-                    let (r, g, b) = (pix[0], pix[1], pix[2]);
-
-                    if pix[3] == 0 {
-                        intent = 0;
-                    }
-
-                    let ascii_char = get_str_ascii(intent, pallet_choice);
-
-                    if is_colored {
-                        print!("{}", ascii_char.truecolor(r, g, b));
-                    } else {
-                        print!("{}", ascii_char);
-                    }
-
-                    line.push(AsciiPixel {
-                        char: ascii_char.to_string(),
-                        color: (r, g, b),
-                    });
-                }
-
-                ascii_lines.push(line);
-                println!();
-            }
-
-            if let Some((ref output_path, char_size)) = output_img {
-                save_ascii_to_image(&ascii_lines, output_path, char_size);
-                println!("Imagem ASCII salva em: {}", output_path);
-            }
-        }
-        Err(e) => {
-            eprintln!("Erro ao abrir imagem: {}", e);
-        }
-    }
-}
-
-fn save_ascii_to_image(ascii_lines: &Vec<Vec<AsciiPixel>>, output_path: &str, char_size: u32) {
-
-    let font_data = fs::read("font-2.ttf").expect("Não foi possível ler a fonte solicitada");
-    let font = Font::try_from_vec(font_data).unwrap();
-    let scale = Scale { x: char_size as f32, y: char_size as f32 };
-
-    let v_metrics = font.v_metrics(scale);
-    let char_width = font.glyph('W').scaled(scale).h_metrics().advance_width;
-
-    let x_spacing = char_width as i32;
-    let y_spacing = v_metrics.ascent.abs() as i32 + v_metrics.descent.abs() as i32;
-
-    let img_width = (ascii_lines[0].len() as i32) * x_spacing;
-    let img_height = (ascii_lines.len() as i32) * y_spacing;
-
-    let mut img = RgbImage::new(img_width as u32, img_height as u32);
-
-
-    for (line_idx, line) in ascii_lines.iter().enumerate() {
-        let y = (line_idx as i32) * y_spacing;
-
-        for (char_idx, ascii_pixel) in line.iter().enumerate() {
-            let x = (char_idx as i32) * x_spacing;
-            draw_text_mut(
-                &mut img,
-                Rgb([ascii_pixel.color.0, ascii_pixel.color.1, ascii_pixel.color.2]),
-                x,
-                y,
-                scale,
-                &font,
-                &ascii_pixel.char,
-            );
+    for (row, line) in lines.iter().enumerate() {
+        for (col, px) in line.iter().enumerate() {
+            let x = (col as u32 * char_w) as i32;
+            let y = (row as u32 * char_h) as i32;
+            draw_text_mut(&mut img, Rgb([px.color.0, px.color.1, px.color.2]), x, y, scale, &font, &px.ch);
         }
     }
 
-    img.save(output_path).expect("Erro ao salvar a imagem de saída");
+    img.save(path)?;
+    println!("✓ Salvo IMG: {}", path);
+    Ok(())
 }
 
-fn generate_random_number(num_of_digits: i32)-> String{
-    let mut rng = rand::thread_rng();
-    let numero: i32 = rng.gen_range(1..=num_of_digits);  // Gera de 1 a 10, incluindo o 10
-    return numero.to_string();
+fn extract_frames(video: &str, out_dir: &str, cols: u32, fps: u32) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(out_dir)?;
+    let status = Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-i", video, "-vf", &format!("scale={}:-2,fps={}", cols, fps)])
+        .arg(format!("{}/frame_%04d.png", out_dir))
+        .status()?;
+    if !status.success() { return Err("FFmpeg falhou".into()); }
+    Ok(())
 }
 
-fn main() {
+fn process_image(path: &str, cols: u32, colored: bool, save_img: Option<u32>, sobel: bool) -> Result<(), Box<dyn Error>> {
+    println!("Processando: {}", path);
+    
+    let img = if path.starts_with("http") {
+        let bytes = reqwest::blocking::get(path)?.bytes()?;
+        image::load_from_memory(&bytes)?
+    } else {
+        image::open(path)?
+    };
+
+    let lines = image_to_ascii(&img, cols, colored, sobel, true);
+    
+    fs::create_dir_all("./out")?;
+    let stem = PathBuf::from(path).file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string();
+    let ts = Utc::now().timestamp();
+    
+    save_ascii_txt(&lines, &format!("./out/{}_{}.txt", stem, ts))?;
+    
+    if let Some(size) = save_img {
+        save_ascii_image(&lines, &format!("./out/{}_{}.png", stem, ts), size)?;
+    }
+    Ok(())
+}
+
+fn process_frames(dir: &str, cols: u32, colored: bool, save_img: Option<u32>, sobel: bool) -> Result<(), Box<dyn Error>> {
+    let mut frames: Vec<_> = fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|d| d.path()))
+        .filter(|p| p.extension().map(|e| e == "png").unwrap_or(false))
+        .collect();
+    frames.sort();
+
+    fs::create_dir_all("./out")?;
+
+    for (i, frame) in frames.iter().enumerate() {
+        print!("\rProcessando frame {}/{}", i + 1, frames.len());
+        let img = image::open(frame)?;
+        let lines = image_to_ascii(&img, cols, colored, sobel, false);
+        
+        let stem = frame.file_stem().and_then(|s| s.to_str()).unwrap_or("frame");
+        save_ascii_txt(&lines, &format!("./out/{}.txt", stem))?;
+        
+        if let Some(size) = save_img {
+            save_ascii_image(&lines, &format!("./out/{}.png", stem), size)?;
+        }
+    }
+    println!("\n✓ Todos os frames processados!");
+    Ok(())
+}
+
+fn play_ascii(dir: &str, fps: u32) -> Result<(), Box<dyn Error>> {
+    let delay = Duration::from_millis(1000 / fps as u64);
+    let mut frames: Vec<_> = fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|d| d.path()))
+        .filter(|p| p.extension().map(|e| e == "txt").unwrap_or(false))
+        .collect();
+    frames.sort();
+
+    if frames.is_empty() {
+        return Err("Nenhum frame .txt encontrado".into());
+    }
+
+    println!("Reproduzindo {} frames (Ctrl+C para sair)...", frames.len());
+    loop {
+        for frame in &frames {
+            print!("\x1B[2J\x1B[H{}", fs::read_to_string(frame)?);
+            thread::sleep(delay);
+        }
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
+
     if args.len() < 2 {
-        eprintln!("Uso: cargo run <caminho_ou_url_da_imagem> <escala> <color> --img <char_size>");
-        return;
+        println!(r#"
+ASCII Art Converter - Uso:
+
+  IMAGEM:
+    cargo run -- imagem.png --image-only [opções]
+
+  VÍDEO:
+    cargo run -- video.mp4 [opções]
+
+  Opções:
+    --image-only      Processa apenas imagem (não vídeo)
+    --cols N          Largura em caracteres (padrão: 100)
+    --color           Saída colorida no terminal
+    --sobel           Usa detecção de bordas
+    --save-img N      Salva como imagem PNG (N = tamanho da fonte)
+    --fps N           FPS para vídeo (padrão: 24)
+    --play            Apenas reproduz frames existentes em ./out
+"#);
+        return Ok(());
     }
 
-    let path_or_url = &args[1];
-    let scale = args.get(2).unwrap_or(&"6".to_string()).parse::<u32>().unwrap_or(6);
-    let is_colored = args.get(3).map(|arg| arg == "color" || arg == "colored").unwrap_or(false);
+    let path = &args[1];
+    let image_only = args.contains(&"--image-only".to_string());
+    let colored = args.contains(&"--color".to_string());
+    let sobel = args.contains(&"--sobel".to_string());
+    let play_only = args.contains(&"--play".to_string());
 
-    let mut output_img: Option<(String, u32)> = None;
+    let get_arg = |flag: &str| -> Option<u32> {
+        args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)?.parse().ok())
+    };
 
-    if let Some(img_flag_pos) = args.iter().position(|arg| arg == "--img") {
-        if let Some(size_arg) = args.get(img_flag_pos + 1) {
-            if let Ok(char_size) = size_arg.parse::<u32>() {
-                let file_name = format!("./out/{}-ascii-{}.png", "image-name", generate_random_number(100));
-                output_img = Some((file_name, char_size));
-            }
-        }
+    let cols = get_arg("--cols").unwrap_or(100);
+    let fps = get_arg("--fps").unwrap_or(24);
+    let save_img = get_arg("--save-img");
+
+    if play_only {
+        return play_ascii("./out", fps);
     }
 
-    get_image(path_or_url.to_string(), scale, is_colored, output_img);
+    if image_only {
+        process_image(path, cols, colored, save_img, sobel)?;
+    } else {
+        let frames_dir = format!("./frames_{}", Utc::now().timestamp());
+        println!("Extraindo frames para: {}", frames_dir);
+        extract_frames(path, &frames_dir, cols * 10, fps)?;
+        
+        println!("Convertendo para ASCII...");
+        process_frames(&frames_dir, cols, colored, save_img, sobel)?;
+        
+        play_ascii("./out", fps)?;
+    }
+
+    Ok(())
 }
-
-
