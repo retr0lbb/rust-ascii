@@ -1,0 +1,7 @@
+services:
+  ascii-app:
+    build: .
+    image: rust-ascii-generator:latest
+    volumes:
+      # Mudamos para /app/arquivos para NÃO apagar o executável do container
+      - .:/app/arquivos
